@@ -4,24 +4,44 @@
 import torch
 import numpy as np
 
+import os
 import wandb
-from tqdm import tqdm
+
+if torch.cuda.is_available():
+    print('GPUs available')
+else:
+    print("GPUs not available")
+
+try:
+    import torch_xla
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.xla_multiprocessing as xmp
+    print("TPUs available")
+except:
+    print('TPUs not available')
+
+try:
+    from rich.progress import track
+except:
+    os.system("pip install rich")
+    from rich.progress import track
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 
 """
 USAGE:
 
-    import torch_utils
-    from torch_utils import TrainerConfig
+    from torch_utils import TorchTrainer
 
-    class Trainer(torch_utils.Trainer):
+    class Trainer(TorchTrainer):
 
-        def __init__(self, model, config):
-            super().__init__(args)
+        def __init__(self, model, args):
             self.model = model
+
+            # call this at end only
+            super().__init__(args)
 
         def forward(self, batch):
             '''[Optional]
@@ -50,72 +70,86 @@ USAGE:
     tr_dataset = .....
     val_dataset = .....
 
-    config = TrainerConfig(path='run-dir', max_epochs=10, load_path='resuming.tar',
-                    project_name='Cool-Project', wandb_run_name='hello-world', accumulation_steps=8,
-                    precision='float32', wandb_run_id='put-anything-unique')
+    args = TrainerConfig(....)
 
-    trainer = Trainer(model, config)
+    trainer = Trainer(model, args)
     trainer.fit(tr_dataset, val_dataset)
+
+    Using TPU is pretty simple, run following command:
+        !pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl
+    & pass tpus=1 in TrainerConfig
+        config = TrainerConfig(tpus=1, .....)
+
 """
 
 
-@dataclass
-class TrainerConfig:
+class DefaultArgs:
 
-    path: str = None
+    save_path: str = None
+
+    fast_dev_run: bool = False
 
     project_name: str = 'Cool-Project'
     wandb_run_name: str = None
 
-    resume_training: bool = False
-    wandb_run_id: str = None # will be helpful in resuming
+    # will be helpful in resuming
+    wandb_resume: bool = False
+    wandb_run_id: str = None
 
     max_epochs: int = 10
     load_path: str = None # 'resuming.tar'
 
     accumulation_steps: int = 1
-    
-    precision: str = 'float32' # or 'mixed_16'
+
+    tpus: int = 0
+
+    precision: str = 'float32' # or 'mixed16' or 'float16'
 
 
 class TrainingLoop(ABC):
 
     def forward(self, **kwargs):
-        """This method is must be implemented in the some class inherited from this class"""
+        """This method can be implemented in the some class inherited from this class"""
 
     @abstractmethod
     def configure_optimizers(self, **kwargs):
-        """This method is must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the some class inherited from this class"""
 
     @abstractmethod
     def training_step(self, **kwargs):
-        """This method is must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the some class inherited from this class"""
 
     @abstractmethod
     def validation_step(self, **kwargs):
-        """This method is must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the some class inherited from this class"""
 
     def __init__(self, args):
         super().__init__()
 
         # self.model = ?
+        self.precision = args.precision
 
-        # devices are automatically handled
-        self.device = torch.device('cpu')
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
+        self.device = self.configure_devices(args)
+        if self.gpus > 1:
             self.model = torch.nn.DataParallel(self.model)
 
-        self.precision = args.precision
         self.max_epochs = args.max_epochs
-        self.path = args.path
+        self.save_path = args.save_path
         self.accumulation_steps = args.accumulation_steps
         self.load_path = args.load_path
-        self.resume_training = resume_training
+
+        self.wandb_resume = args.wandb_resume
+        self.fast_dev_run = args.fast_dev_run
+
+        self.project_name = args.project_name
+        self.wandb_run_name = args.wandb_run_name
+        self.wandb_run_id = args.wandb_run_id
+        self.wandb_off = args.wandb_off
 
         self.optimizer = self.configure_optimizers()
-        self.scaler = self._configure_precision()
+        self.scaler = self._configure_scaler()
 
+        # will help in resuming training
         self.start_epoch = 1
         self.start_batch_idx = 0
 
@@ -124,34 +158,78 @@ class TrainingLoop(ABC):
 
         self.model.to(self.device)
 
+        if self.precision == 'float16':
+            self._setup_half()
+
+    def _setup_half(self):
+        self.model.half()
+        print('Training with float16')
+        for layer in self.model.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.float()
+
+    def configure_devices(self, args):
+
+        device = torch.device('cpu')
+
+        # If gpu is available, its automatically getting used
+        self.gpus = torch.cuda.device_count()
+        if self.gpus > 0:
+            device = torch.device('cuda')
+
+        if self.precision == 'mixed_16':
+            if args.tpus > 0:
+                raise ValueError('Currently mixed_16 is not supported with TPUs')
+            elif self.gpus == 0:
+                raise ValueError("mixed_16 should not be used with cpu")
+
+        self.tpus = args.tpus
+        if args.tpus == 1:
+            try:
+                device = xm.xla_device()
+                self.gpus = 0
+            except:
+                raise ValueError("Can't set device to TPUs")
+
+        print(f"Using {device}")
+        return device
+
     def fit(self, tr_dataset, val_dataset):
 
         self.setup_wandb()
+
+        if self.fast_dev_run:
+            print("fast_dev_run is set to True")
+            tr_dataset = next(iter(tr_dataset))
+            val_datset = next(iter(val_dataset))
 
         try:
             self.train(tr_dataset, val_dataset)
         except KeyboardInterrupt:
             print('Interrupting through keyboard ======= Saving model weights')
-            torch.save(self.model.state_dict(), 'keyboard-interrupted_'+self.path)
+            torch.save(self.model.state_dict(), 'keyboard-interrupted_'+self.save_path)
 
     def setup_wandb(self):
 
-        if self.resume_training:
+        # useful for testing
+        if self.wandb_off:
+            try: 
+                os.system('wandb off')
+            except:
+                raise ValueError("wandb not available")
+
+        if self.wandb_resume:
             if self.wandb_run_id is None:
                 raise ValueError('wandb-run-id must be mentioned for resuming training')
             wandb.init(resume=self.wandb_run_id)
-
         else:
             wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id)
 
-    def __call__(self, **kwargs):
-        return self.forward(**kwargs)
-
-    def _configure_precision(self):
-        if self.precision == 'mixed_16':
+    def _configure_scaler(self):
+        if self.precision == 'mixed16':
             if not torch.cuda.is_available():
                 raise ValueError('CUDA is not available')
-            self.training_step = torch.cuda.amp.autocast(self.training_step, enabled=(self.precision=='mixed_16'))
+            print('Training with mixed16')
             return torch.cuda.amp.GradScaler()
 
     def empty_grad(self):
@@ -163,21 +241,23 @@ class TrainingLoop(ABC):
         # activating layers like dropout, batch-normalization for training
         self.model.train(True)
 
-        steps = 0 # setting up global-steps for logging
+        steps = 0 # updating under accumulation condition
         tr_loss = 0 # setting up tr_loss for accumulation
 
-        # setting up progress-bar for epochs (handling resuming)
+        # setting up epochs (handling resuming)
         epochs = range(self.start_epoch, self.max_epochs+1)
         for epoch in epochs:
 
             # accumulator of training-loss
-            losses = []
+            losses = [0]
+
+            val_loss = 0
 
             # helping in resuming
             self.start_epoch = epoch
 
             # setting up progress bar to display
-            pbar = tqdm(enumerate(tr_dataset))
+            pbar = track(enumerate(tr_dataset), description=f"running epoch-{epoch} | tr_loss-{np.mean(losses)} | val_loss-{val_loss}")
             for batch_idx, batch in pbar:
 
                 # will help in resuming training from last-saved batch_idx
@@ -197,7 +277,7 @@ class TrainingLoop(ABC):
                 # configuring for mixed-precision
                 if self.precision == 'mixed_16':
                     self.scaler.scale(loss).backward()
-                
+
                 else:
                     loss.backward()
 
@@ -208,15 +288,12 @@ class TrainingLoop(ABC):
                     if self.precision == 'mixed_16':
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
-                    
-                    else:
-                        self.optimizer.step()
 
-                    # emptying gradients in very efficient way
-                    self.empty_grad()
-                    
-                    # emptying tr_loss
-                    tr_loss = 0
+                    else:
+                        if self.tpus == 1:
+                            xm.optimizer_step(self.optimizer, barrier=True)
+                        else:
+                            self.optimizer.step()
 
                     steps += 1
 
@@ -225,23 +302,33 @@ class TrainingLoop(ABC):
                     'step_tr_loss': tr_loss
                     }, commit=True)
 
+                    # emptying gradients in very efficient way
+                    self.empty_grad()
+
                     # accumulating losses for training-loss at epoch end
-                    losses.append(loss.item())
-                
-                if self.path:
-                    self.save_state_dict(self.path)
+                    losses.append(tr_loss)
+
+                    # emptying tr_loss
+                    tr_loss = 0
+
+                if self.save_path:
+                    self.save_state_dict(self.save_path)
 
             # clearing batch_idx for next epoch
             self.start_batch_idx = 0
 
             # val_loss at training epoch end for logging
             val_loss = self.evaluate(val_dataset)
+            val_loss = val_loss.item()
 
             wandb.log({
                 'epoch': epoch,
                 'tr_loss': np.mean(losses),
-                'val_loss': val_loss.item()
+                'val_loss': val_loss
                 }, commit=False)
+            
+        print("Saving final weights")
+        self.save_state_dict(self.save_path)
 
     def evaluate(self, val_dataset):
         # disabling layers like dropout, batch-normalization
@@ -272,7 +359,10 @@ class TrainingLoop(ABC):
                 'scaler': self.scaler.state_dict()
                 })
 
-        torch.save(state_dict, path)
+        if self.tpu > 0:
+            xm.save(state_dict, path)
+        else:
+            torch.save(state_dict, path)
 
     def load_state_dict(self, path: str):
         
@@ -287,7 +377,7 @@ class TrainingLoop(ABC):
             )
 
         # load checkpoint from local-dir
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=torch.device('cpu'))
 
         # handling data-parallel case
         module = self.model.module if hasattr(self.model, "module") else self.model
@@ -303,7 +393,7 @@ class TrainingLoop(ABC):
         self.start_batch_idx = checkpoint['start_batch_idx']
 
 
-class Trainer(TrainingLoop):
+class TorchTrainer(TrainingLoop):
 
     def __init__(self, args):
         TrainingLoop.__init__(self, args)
@@ -347,18 +437,6 @@ class Trainer(TrainingLoop):
 
 
 if __name__ == '__main__':
-    
-    # code working on cpu
-    # gradient accumulation working
-    # resume-training is working
-
-    config = TrainerConfig()
-    args = config
-    print(args)
-    
-    model = torch.nn.Sequential(
-        torch.nn.Linear(4, 1)
-    )
-
-    # trainer = Trainer(model, args)
-    # trainer.fit(torch.ones(3200, 4, dtype=torch.float), torch.ones(3, 4, dtype=torch.float))
+    """
+    Peace max .....
+    """
