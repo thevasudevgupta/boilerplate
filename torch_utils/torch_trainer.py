@@ -21,10 +21,10 @@ except:
     print('TPUs not available')
 
 try:
-    from rich.progress import track
+    from tqdm import tqdm
 except:
-    os.system("pip install rich")
-    from rich.progress import track
+    os.system("pip install tqdm")
+    from tqdm import tqdm
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 """
 USAGE:
 
-    from torch_utils import TorchTrainer
+    from torch_utils import TorchTrainer, DefaultArgs
 
     class Trainer(TorchTrainer):
 
@@ -42,11 +42,6 @@ USAGE:
 
             # call this at end only
             super().__init__(args)
-
-        def forward(self, batch):
-            '''[Optional]
-                ....
-            '''
 
         def configure_optimizers(self):
             '''
@@ -70,73 +65,110 @@ USAGE:
     tr_dataset = .....
     val_dataset = .....
 
-    args = TrainerConfig(....)
+    @dataclass
+    class Config(DefaultArgs):
+
+        # pass your args
+        lr: float = 2e-5
+        ......
+
+        # If want to update defaut_args; just pass it here only
+        save_dir: str = 'weights'
+        .......
 
     trainer = Trainer(model, args)
     trainer.fit(tr_dataset, val_dataset)
 
     Using TPU is pretty simple, run following command:
         !pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl
-    & pass tpus=1 in TrainerConfig
-        config = TrainerConfig(tpus=1, .....)
+    & pass tpus=1 in DefaultArgs
 
 """
 
-
+@dataclass
 class DefaultArgs:
 
-    save_path: str = None
+    # args used in TorchTrainer
+    map_location: torch.device = torch.device("cuda:0")
+
+    # model weights will be in `.pt` file 
+    # while other training stuff will be in `.tar`
+    save_dir: str = "resuming"
+    load_dir: str = None
 
     fast_dev_run: bool = False
 
-    project_name: str = 'Cool-Project'
+    project_name: str = None
     wandb_run_name: str = None
+    wandb_off: bool = False
 
     # will be helpful in resuming
     wandb_resume: bool = False
     wandb_run_id: str = None
-
-    max_epochs: int = 10
-    load_path: str = None # 'resuming.tar'
-
+    
+    max_epochs: int = 5
+    
     accumulation_steps: int = 1
-
     tpus: int = 0
-
-    precision: str = 'float32' # or 'mixed16' or 'float16'
+    precision: str = 'float32'
 
 
 class TrainingLoop(ABC):
 
-    def forward(self, **kwargs):
-        """This method can be implemented in the some class inherited from this class"""
-
     @abstractmethod
     def configure_optimizers(self, **kwargs):
-        """This method must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the class inherited from this class"""
 
     @abstractmethod
     def training_step(self, **kwargs):
-        """This method must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the class inherited from this class"""
 
     @abstractmethod
     def validation_step(self, **kwargs):
-        """This method must be implemented in the some class inherited from this class"""
+        """This method must be implemented in the class inherited from this class"""
+
+    def training_batch_end(self, batch_idx):
+        """This method is called at the end of batch-{batch_idx}"""
+
+    def training_epoch_end(self, epoch, losses):
+        """This method is called at the end of epoch"""
+
+    def training_end(self):
+        """This method is called at the end of complete training"""
+
+    def after_backward(self):
+        """This method is called just after `loss.backward()`"""
 
     def __init__(self, args):
         super().__init__()
 
+        self._sanity_check(args)
+
+        self.args_dictn = args.__dict__
+
         # self.model = ?
         self.precision = args.precision
+        self.load_dir = args.load_dir
+        self.save_dir = self._setup_savedir(args.save_dir)
 
         self.device = self.configure_devices(args)
         if self.gpus > 1:
             self.model = torch.nn.DataParallel(self.model)
 
-        self.max_epochs = args.max_epochs
-        self.save_path = args.save_path
+        if self.load_dir:
+            self.map_location = args.map_location
+            self.load_model_state_dict(self.load_dir)
+        self.model.to(self.device)
+
+        self.optimizer = self.configure_optimizers()
+        self.scaler = self._configure_scaler()
+        self.start_epoch = 0
+        self.start_batch_idx = 0
+        if self.load_dir:
+            self.load_training_state_dict(self.load_dir)
+
+        self.max_epochs = args.max_epochs        
         self.accumulation_steps = args.accumulation_steps
-        self.load_path = args.load_path
 
         self.wandb_resume = args.wandb_resume
         self.fast_dev_run = args.fast_dev_run
@@ -146,27 +178,39 @@ class TrainingLoop(ABC):
         self.wandb_run_id = args.wandb_run_id
         self.wandb_off = args.wandb_off
 
-        self.optimizer = self.configure_optimizers()
-        self.scaler = self._configure_scaler()
-
-        # will help in resuming training
-        self.start_epoch = 1
-        self.start_batch_idx = 0
-
-        if self.load_path:
-            self.load_state_dict(self.load_path)
-
-        self.model.to(self.device)
-
         if self.precision == 'float16':
             self._setup_half()
 
+    def _setup_savedir(self, save_dir):
+        if save_dir:
+            if save_dir not in os.listdir():
+                os.mkdir(directory)
+            return save_dir
+
+    def _sanity_check(self, args):
+        if not hasattr(args, "__dict__"):
+            raise ValueError("Your argument class must have `dataclass` decorator")
+
+        for arg in DefaultArgs().__dict__:
+            if not hasattr(args, arg):
+                raise ValueError(f"Your config must have `{arg}`")
+
+    def train_step(self, batch, batch_idx):
+
+        if self.precision == 'mixed16':
+            return torch.cuda.amp.autocast(self.training_step)(batch, batch_idx)
+
+        return self.training_step(batch, batch_idx)
+
+    def val_step(self, batch):
+
+        if self.precision == 'mixed16':
+            return torch.cuda.amp.autocast(self.validation_step)(batch, batch_idx)
+
+        return self.validation_step(batch)
+
     def _setup_half(self):
-        self.model.half()
-        print('Training with float16')
-        for layer in self.model.modules():
-            if isinstance(layer, nn.BatchNorm2d):
-                layer.float()
+        raise ValueError('Need to implement float16 with apex')
 
     def configure_devices(self, args):
 
@@ -177,7 +221,7 @@ class TrainingLoop(ABC):
         if self.gpus > 0:
             device = torch.device('cuda')
 
-        if self.precision == 'mixed_16':
+        if self.precision == 'mixed16':
             if args.tpus > 0:
                 raise ValueError('Currently mixed_16 is not supported with TPUs')
             elif self.gpus == 0:
@@ -223,7 +267,7 @@ class TrainingLoop(ABC):
                 raise ValueError('wandb-run-id must be mentioned for resuming training')
             wandb.init(resume=self.wandb_run_id)
         else:
-            wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id)
+            wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id, config=self.args_dictn)
 
     def _configure_scaler(self):
         if self.precision == 'mixed16':
@@ -245,49 +289,50 @@ class TrainingLoop(ABC):
         tr_loss = 0 # setting up tr_loss for accumulation
 
         # setting up epochs (handling resuming)
-        epochs = range(self.start_epoch, self.max_epochs+1)
+        epochs = range(self.start_epoch, self.max_epochs)
         for epoch in epochs:
 
             # accumulator of training-loss
-            losses = [0]
-
-            val_loss = 0
+            losses = []
 
             # helping in resuming
             self.start_epoch = epoch
 
             # setting up progress bar to display
-            pbar = track(enumerate(tr_dataset), description=f"running epoch-{epoch} | tr_loss-{np.mean(losses)} | val_loss-{val_loss}")
+            desc = f"running epoch-{epoch}"
+            pbar = tqdm(enumerate(tr_dataset), total=len(tr_dataset), desc=desc, initial=0, leave=False)
             for batch_idx, batch in pbar:
 
                 # will help in resuming training from last-saved batch_idx
                 if batch_idx != self.start_batch_idx:
                     steps += 1
-                    print(f'Wasting this iteration-{batch_idx} to start training from batch_idx-{self.start_batch_idx}')
+                    pbar.write(f'training will start from batch_idx-{self.start_batch_idx}')
                     continue
-                
+
                 self.start_batch_idx += 1
 
                 # simply doing forward-propogation
-                loss = self.training_step(batch, batch_idx)
+                loss = self.train_step(batch, batch_idx)
+                loss /= self.accumulation_steps
 
                 # accumulating tr_loss for logging (helpful when accumulation-steps > 1)
                 tr_loss += loss.item()
 
                 # configuring for mixed-precision
-                if self.precision == 'mixed_16':
-                    self.scaler.scale(loss).backward()
+                if self.precision == 'mixed16':
+                    self.mixed_backward(self.scaler, loss)
 
                 else:
                     loss.backward()
+
+                self.after_backward()
 
                 # gradient accumulation handler
                 if (batch_idx+1)%self.accumulation_steps == 0:
 
                     # configuring for mixed-precision
-                    if self.precision == 'mixed_16':
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
+                    if self.precision == 'mixed16':
+                        self.mixed_optimizer_step(self, self.optimizer)
 
                     else:
                         if self.tpus == 1:
@@ -295,12 +340,13 @@ class TrainingLoop(ABC):
                         else:
                             self.optimizer.step()
 
-                    steps += 1
-
                     wandb.log({
                     'global_steps': steps,
                     'step_tr_loss': tr_loss
                     }, commit=True)
+
+                    steps += 1
+                    pbar.set_postfix(tr_loss=tr_loss)
 
                     # emptying gradients in very efficient way
                     self.empty_grad()
@@ -311,86 +357,126 @@ class TrainingLoop(ABC):
                     # emptying tr_loss
                     tr_loss = 0
 
-                if self.save_path:
-                    self.save_state_dict(self.save_path)
+                self.training_batch_end(batch_idx)
 
             # clearing batch_idx for next epoch
             self.start_batch_idx = 0
 
             # val_loss at training epoch end for logging
             val_loss = self.evaluate(val_dataset)
-            val_loss = val_loss.item()
 
             wandb.log({
                 'epoch': epoch,
                 'tr_loss': np.mean(losses),
-                'val_loss': val_loss
+                'val_loss': val_loss.item()
                 }, commit=False)
-            
-        print("Saving final weights")
-        self.save_state_dict(self.save_path)
+
+            self.training_epoch_end(epoch, losses)
+
+        self.start_epoch += 1
+
+        if self.save_dir:
+            print("Saving model and training related stuff")
+            self.save_model_state_dict(self.save_dir)
+            self.save_training_state_dict(self.save_dir)
+        
+        self.training_end()
+
+    def mixed_optimizer_step(self):
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+    def mixed_backward(self, loss):
+        self.scaler.scale(loss).backward()
 
     def evaluate(self, val_dataset):
         # disabling layers like dropout, batch-normalization
         self.model.train(False)
 
-        with torch.no_grad():
-            for batch in val_dataset:
-                val_loss = self.validation_step(batch)
+        desc = 'Validating ....'
+        pbar = tqdm(val_dataset, total=len(val_dataset), desc=desc, initial=0, leave=False)
+        for batch in pbar:
+            val_loss = self.val_step(batch)
+            pbar.set_postfix(val_loss=val_loss.item())
 
         return val_loss
 
-    def save_state_dict(self, path: str):
+    def save_training_state_dict(self, save_dir: str):
 
-        # handling data parallel case
-        module = self.model.module if hasattr(self.model, "module") else self.model
+        path = f"{save_dir}/model.pt"
 
         # defining what all to save
         state_dict = {
-            'model': module.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'start_epoch': self.start_epoch,
             'start_batch_idx':  self.start_batch_idx
             }
 
         # mixed-precision states saving, if saving enabled
-        if self.precision == 'mixed_16':
+        if self.precision == 'mixed16':
             state_dict.update({
                 'scaler': self.scaler.state_dict()
                 })
 
-        if self.tpu > 0:
+        torch.save(state_dict, path)
+
+    def save_model_state_dict(self, save_dir: str):
+
+        path = f"{save_dir}/model.pt"
+
+        module = self.model.module if hasattr(self.model, "module") else self.model
+        state_dict = module.state_dict()
+
+        if self.tpus > 0:
             xm.save(state_dict, path)
         else:
             torch.save(state_dict, path)
 
-    def load_state_dict(self, path: str):
-        
+    def load_model_state_dict(self, load_dir: str):
+
+        path = f"{load_dir}/model.pt"
+        """
+        Note:
+            `map_function` is very memory expensive if you are changing the device
+        """
+
         print(
             """loading:
-                     1) model-state-dict
-                     2) optimizer-state-dict
-                     3) scaler-state-dict (if mixed-precision)
-                     4) start_epoch
-                     5) start_batch_idx
+                1) model state_dict
+            """
+        )
+
+        model = torch.load(path, map_location=self.map_location)
+
+        if hasattr(self.model, "module"):
+            self.model.module.load_state_dict(model)
+        else:
+            self.model.load_state_dict(model)        
+
+    def load_training_state_dict(self, load_dir: str):
+        
+        path = f"{load_dir}/training.tar"
+
+        print(
+            """loading:
+                1) optimizer-state-dict
+                2) scaler-state-dict (if mixed-precision)
+                3) start_epoch
+                4) start_batch_idx
             """
             )
 
-        # load checkpoint from local-dir
-        checkpoint = torch.load(path, map_location=torch.device('cpu'))
+        checkpoint = torch.load(path)
+        self.optimizer.load_state_dict(checkpoint.pop('optimizer'))
 
-        # handling data-parallel case
-        module = self.model.module if hasattr(self.model, "module") else self.model
-        module.load_state_dict(checkpoint['model'])
-        
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-        
-        if self.precision == 'mixed_16':
-            self.scaler.load_state_dict(checkpoint['scaler'])
+        if self.precision == 'mixed16':
+            self.scaler.load_state_dict(checkpoint.pop('scaler'))
 
         # helpful in resuming training from particular step
-        self.start_epoch = checkpoint['start_epoch']
-        self.start_batch_idx = checkpoint['start_batch_idx']
+        self.start_epoch = checkpoint.pop('start_epoch')
+        self.start_batch_idx = checkpoint.pop('start_batch_idx')
+
+        print(f'loading successful (start-epoch-{self.start_epoch}, start_batch_idx-{self.start_batch_idx})')
 
 
 class TorchTrainer(TrainingLoop):
@@ -416,6 +502,7 @@ class TorchTrainer(TrainingLoop):
         This method should look something like this
 
             batch = batch.to(self.device)
+            # with torch.cuda.amp.autocast((self.precision=='mixed_16')):
             out = self(batch)
             loss = out.mean()
             loss /= self.accumulation_steps
@@ -429,11 +516,25 @@ class TorchTrainer(TrainingLoop):
         This method should look something like this
 
             batch = batch.to(self.device)
-            out = self(batch)
-            loss = out.mean()
+            with torch.no_grad():
+                # with torch.cuda.amp.autocast((self.precision=='mixed_16')):
+                out = self(batch)
+                loss = out.mean()
 
             return loss
         """
+
+    def training_batch_end(self, batch_idx):
+        """This method is called at the end of batch-{batch_idx}"""
+
+    def training_epoch_end(self, epoch, losses):
+        """This method is called at the end of epoch"""
+
+    def training_end(self):
+        """This method is called at the end of complete training"""
+
+    def after_backward(self):
+        """This method is called just after `loss.backward()`"""
 
 
 if __name__ == '__main__':
