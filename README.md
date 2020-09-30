@@ -26,7 +26,7 @@ class Trainer(TorchTrainer):
 
         batch = batch.to(self.device)
 
-        out = self(batch)
+        out = self.model(batch)
         loss = out.mean()
 
         return loss
@@ -36,7 +36,7 @@ class Trainer(TorchTrainer):
         batch = batch.to(self.device)
 
         with torch.no_grad():
-            out = self(batch)
+            out = self.model(batch)
             loss = out.mean()
 
         return loss
