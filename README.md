@@ -6,51 +6,51 @@ This is simple trainer for pytorch users (tested for pytorch 1.6).
 
 ```python
 
-    from torch_utils import TorchTrainer
+from torch_utils import TorchTrainer
 
-    class Trainer(TorchTrainer):
+class Trainer(TorchTrainer):
 
-        def __init__(self, model, args):
-            self.model = model
-            self.lr = args.lr
-            # define args whatever you need
+    def __init__(self, model, args):
+        self.model = model
+        self.lr = args.lr
+        # define args whatever you need
 
-            # call this at end only
-            super().__init__(args)
+        # call this at end only
+        super().__init__(args)
 
-        def configure_optimizers(self):
-            return torch.optim.Adam(self.model.parameters(), lr=self.lr)
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
-        def training_step(self, batch, batch_idx):
-            # This method should look something like this
+    def training_step(self, batch, batch_idx):
+        # This method should look something like this
 
-            batch = batch.to(self.device)
+        batch = batch.to(self.device)
 
+        out = self(batch)
+        loss = out.mean()
+
+        return loss
+
+    def validation_step(self, batch):
+        # This method should look something like this
+        batch = batch.to(self.device)
+
+        with torch.no_grad():
             out = self(batch)
             loss = out.mean()
 
-            return loss
+        return loss
 
-        def validation_step(self, batch):
-            # This method should look something like this
-            batch = batch.to(self.device)
+# define model architecture
+model = .....
 
-            with torch.no_grad():
-                out = self(batch)
-                loss = out.mean()
+# define dataset
+tr_dataset = .....
+val_dataset = .....
 
-            return loss
-
-    # define model architecture
-    model = .....
-
-    # define dataset
-    tr_dataset = .....
-    val_dataset = .....
-
-    trainer = Trainer(model, args)
-    trainer.fit(tr_dataset, val_dataset)
-    # Enjoy training......Yayyyyyyyyy
+trainer = Trainer(model, args)
+trainer.fit(tr_dataset, val_dataset)
+# Enjoy training......Yayyyyyyyyy
 ```
 
 Currently only single GPU & Single TPU are supported. Don't forget to send your batch to `self.device`, model will be automatically transferred to `self.device` (you need not care that). `self.device` will be automatically set to GPU (when GPU is available) or to TPU (when tpu=1 in config-class).
@@ -61,19 +61,19 @@ Lots of args are involved in torch-trainer. You can either inherit your config-c
 
 ```python
 
-    from dataclasses import dataclass
-    from torch_utils import DefaultArgs
+from dataclasses import dataclass
+from torch_utils import DefaultArgs
 
-    @dataclass
-    class Config(DefaultArgs):
+@dataclass
+class Config(DefaultArgs):
 
-        # pass your args
-        lr: float = 2e-5
-        ......
+    # pass your args
+    lr: float = 2e-5
+    ......
 
-        # If want to update defaut_args; just pass it here only
-        save_dir: str = 'weights'
-        .......
+    # If want to update defaut_args; just pass it here only
+    save_dir: str = 'weights'
+    .......
 ```
 
 ## Default args
