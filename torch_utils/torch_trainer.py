@@ -3,6 +3,7 @@
 
 import torch
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 import os
 import wandb
@@ -88,6 +89,9 @@ USAGE:
 @dataclass
 class DefaultArgs:
 
+    # root dir for any kind of saving
+    base_dir: str = "."
+
     # args used in TorchTrainer
     map_location: torch.device = torch.device("cuda:0")
 
@@ -111,7 +115,7 @@ class DefaultArgs:
     accumulation_steps: int = 1
     tpus: int = 0
     precision: str = 'float32'
-
+    
 
 class TrainingLoop(ABC):
 
@@ -136,7 +140,7 @@ class TrainingLoop(ABC):
     def training_end(self):
         """This method is called at the end of complete training"""
 
-    def after_backward(self):
+    def after_backward(self, batch_idx):
         """This method is called just after `loss.backward()`"""
 
     def __init__(self, args):
@@ -147,6 +151,8 @@ class TrainingLoop(ABC):
         self.args_dictn = args.__dict__
 
         # self.model = ?
+        self.base_dir = self._setup_basedir(args.base_dir)
+
         self.precision = args.precision
         self.load_dir = args.load_dir
         self.save_dir = self._setup_savedir(args.save_dir)
@@ -157,7 +163,7 @@ class TrainingLoop(ABC):
 
         if self.load_dir:
             self.map_location = args.map_location
-            self.load_model_state_dict(self.load_dir)
+            self.load_model_state_dict(f"{self.base_dir}/{self.load_dir}")
         self.model.to(self.device)
 
         self.optimizer = self.configure_optimizers()
@@ -177,15 +183,26 @@ class TrainingLoop(ABC):
         self.wandb_run_name = args.wandb_run_name
         self.wandb_run_id = args.wandb_run_id
         self.wandb_off = args.wandb_off
+        self.wandb_dir = self.base_dir
 
         if self.precision == 'float16':
             self._setup_half()
 
     def _setup_savedir(self, save_dir):
         if save_dir:
-            if save_dir not in os.listdir():
-                os.mkdir(directory)
+            if save_dir not in os.listdir(self.base_dir):
+                os.mkdir(f"{self.base_dir}/{save_dir}")
             return save_dir
+
+    def _setup_basedir(self, base_dir):
+        if base_dir is None:
+            return "."
+        elif base_dir == ".":
+            return base_dir
+        elif base_dir not in os.listdir():
+            os.mkdir(base_dir)
+            print(f"training stuff will be saved in {base_dir}")
+            return base_dir
 
     def _sanity_check(self, args):
         if not hasattr(args, "__dict__"):
@@ -267,7 +284,7 @@ class TrainingLoop(ABC):
                 raise ValueError('wandb-run-id must be mentioned for resuming training')
             wandb.init(resume=self.wandb_run_id)
         else:
-            wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id, config=self.args_dictn)
+            wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id, config=self.args_dictn, dir=self.wandb_dir)
 
     def _configure_scaler(self):
         if self.precision == 'mixed16':
@@ -300,7 +317,7 @@ class TrainingLoop(ABC):
 
             # setting up progress bar to display
             desc = f"running epoch-{epoch}"
-            pbar = tqdm(enumerate(tr_dataset), total=len(tr_dataset), desc=desc, initial=0, leave=False)
+            pbar = tqdm(enumerate(tr_dataset), total=len(tr_dataset), desc=desc, initial=0, leave=True)
             for batch_idx, batch in pbar:
 
                 # will help in resuming training from last-saved batch_idx
@@ -320,12 +337,11 @@ class TrainingLoop(ABC):
 
                 # configuring for mixed-precision
                 if self.precision == 'mixed16':
-                    self.mixed_backward(self.scaler, loss)
+                    loss = self.scaler.scale(loss)
 
-                else:
-                    loss.backward()
+                loss.backward()
 
-                self.after_backward()
+                self.after_backward(batch_idx)
 
                 # gradient accumulation handler
                 if (batch_idx+1)%self.accumulation_steps == 0:
@@ -377,17 +393,14 @@ class TrainingLoop(ABC):
 
         if self.save_dir:
             print("Saving model and training related stuff")
-            self.save_model_state_dict(self.save_dir)
-            self.save_training_state_dict(self.save_dir)
+            self.save_model_state_dict(f"{self.base_dir}/{self.save_dir}")
+            self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
         
         self.training_end()
 
     def mixed_optimizer_step(self):
         self.scaler.step(self.optimizer)
         self.scaler.update()
-
-    def mixed_backward(self, loss):
-        self.scaler.scale(loss).backward()
 
     def evaluate(self, val_dataset):
         # disabling layers like dropout, batch-normalization
@@ -484,11 +497,6 @@ class TorchTrainer(TrainingLoop):
     def __init__(self, args):
         TrainingLoop.__init__(self, args)
 
-    def forward(self, batch):
-        """
-        defines how you want to call model
-        """
-
     @abstractmethod
     def configure_optimizers(self):
         """
@@ -533,8 +541,40 @@ class TorchTrainer(TrainingLoop):
     def training_end(self):
         """This method is called at the end of complete training"""
 
-    def after_backward(self):
+    def after_backward(self, batch_idx):
         """This method is called just after `loss.backward()`"""
+
+    def histogram_params(self, logdir="tb_params"):
+        """
+        You need to call this method yourself
+        """
+        writer = SummaryWriter(log_dir=f"{self.base_dir}/{logdir}")
+
+        params = self.model.named_parameters()
+        for n, param in params:
+            writer.add_histogram(n, param)
+        
+        writer.close()
+        # tensorboard --logdir "{tb_params}"
+        
+    def histogram_grads(self, logdir="tb_grads"):
+        """
+        You need to call this method yourself
+
+        Remember to call this only after `backward`
+        """
+
+        writer = SummaryWriter(log_dir=f"{self.base_dir}/{logdir}")
+
+        params = self.model.named_parameters()
+        for n, param in params:
+            if param.grad is not None:
+                writer.add_histogram(n, param.grad)
+            else:
+                writer.add_scalar(n, 0.0)
+
+        writer.close()
+        # tensorboard --logdir "{tb_grads}"
 
 
 if __name__ == '__main__':
