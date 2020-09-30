@@ -74,13 +74,9 @@ class Config(DefaultArgs):
     # If want to update defaut_args; just pass it here only
     save_dir: str = 'weights'
     .......
-```
 
-## Default args
-
-```python
-Default Args:
-
+# Default Arguments
+"""
     base_dir (str) : root dir for any kind of saving (default = ".")
     map_location (torch.device) : argument used in torch.load() while loading model-state-dict (default = torch.device("cuda:0"))
 
@@ -102,6 +98,7 @@ Default Args:
     # Run following command before hand and specify 1, incase you want to use TPUs
     # !pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl
     tpus (int) : specify 1 incase of using single tpu (default = 0)
+"""
 ```
 
 ## TODO
