@@ -1,12 +1,16 @@
 # __author__ = 'Vasudev Gupta'
 # __author_email__ = '7vasudevgupta@gmail.com'
 
-import torch
 import numpy as np
+import torch
 from torch.utils.tensorboard import SummaryWriter
 
 import os
 import wandb
+from tqdm import tqdm
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 if torch.cuda.is_available():
     print('GPUs available')
@@ -20,15 +24,6 @@ try:
     print("TPUs available")
 except:
     print('TPUs not available')
-
-try:
-    from tqdm import tqdm
-except:
-    os.system("pip install tqdm")
-    from tqdm import tqdm
-
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 
 """
@@ -99,6 +94,8 @@ class DefaultArgs:
     # while other training stuff will be in `.tar`
     save_dir: str = "resuming"
     load_dir: str = None
+    save_epoch_dir: str = None
+    early_stop_n: int = None
 
     fast_dev_run: bool = False
 
@@ -115,9 +112,145 @@ class DefaultArgs:
     accumulation_steps: int = 1
     tpus: int = 0
     precision: str = 'float32'
-    
 
-class TrainingLoop(ABC):
+
+class TrainerSetup(object):
+
+    def __init__(self):
+        """
+        This class is mainly having setup methods for enable training
+        """
+
+    @staticmethod
+    def assert_epoch_saving(val_metric: list, mode: str = "min"):
+        """
+        Allows saving if loss decreases / accuracy increases
+        n = 'min' corresponds to val_metric being loss-metric
+        n = 'max' corresponds to val_metric being accuracy-metric
+
+        Note:
+            val_metric should be having current value of loss/accuracy
+        """
+        status = False
+        if len(val_metric) < 2:
+            return True
+
+        current_val = val_metric[-1]
+        compr = val_metric[-2]
+        if mode == "min":
+            if current_val < compr:
+                status = True
+        elif mode == "max":
+            if current_val > compr:
+                status = True
+        else:
+            raise ValueError("mode can be only either max or min")
+        return status
+
+    @staticmethod
+    def assert_early_stop(val_metric: list, n: int = None, mode="min"):
+        """
+        If n is specified, then only early stopping will be enabled
+
+        n = 'min' corresponds to val_metric being loss-metric
+        n = 'max' corresponds to val_metric being accuracy-metric
+        """
+        assert(mode in ["max", "min"])
+
+        stop_status = False
+        if n is None:
+            return stop_status
+
+        compr = np.max(val_metric[-n:]) if mode == "min" else np.min(val_metric[-n:])
+        if compr == val_metric[-1]:
+            stop_status = True
+
+        return stop_status
+
+    @staticmethod
+    def stop_early(val_metric: list, n: int = None, mode="min"):
+        status = self.assert_early_stop(val_metric, n, mode)
+        if status:
+            raise KeyboardInterrupt("Model training stopped due to early-stopping")
+
+    @staticmethod
+    def _sanity_check(args: DefaultArgs):
+        if not hasattr(args, "__dict__"):
+            raise ValueError("Your argument class must have `dataclass` decorator")
+
+        for arg in DefaultArgs().__dict__:
+            if not hasattr(args, arg):
+                raise ValueError(f"Your config must have `{arg}`")
+
+    @staticmethod
+    def _setup_savedir(save_dir: str, base_dir: str):
+        if save_dir:
+            if save_dir not in os.listdir(base_dir):
+                os.mkdir(f"{base_dir}/{save_dir}")
+            return save_dir
+
+    @staticmethod
+    def _setup_basedir(base_dir: str):
+        if base_dir is None:
+            return "."
+        elif base_dir == ".":
+            return base_dir
+        elif base_dir not in os.listdir():
+            os.mkdir(base_dir)
+            print(f"training stuff will be saved in {base_dir}")
+            return base_dir
+
+    @staticmethod
+    def setup_wandb(args: dict):
+
+        # useful for testing
+        if args["wandb_off"]:
+            try: 
+                os.system('wandb off')
+            except:
+                raise ValueError("wandb not available")
+
+        if args["wandb_resume"]:
+            if args["wandb_run_id"] is None:
+                raise ValueError('wandb-run-id must be mentioned for resuming training')
+            wandb.init(resume=args["wandb_run_id"])
+        else:
+            wandb.init(project=args["project_name"], name=args["wandb_run_name"], id=args["wandb_run_id"], config=args["wandb_config"], dir=args["wandb_dir"])
+
+    @staticmethod
+    def display_metrics(epochs: list, tr_metrics: list, val_metrics: list):
+        # round factors should be 3 for proper layout
+
+        results = """
+                    |--------------------------------------------|
+                        epoch   |   tr_metric   |   val_metric   
+                    |--------------------------------------------|"""
+
+        for e, tr, val in zip(range(epochs), tr_metrics, val_metrics):
+            res = """
+                          {}     |     {}     |      {}     
+                    |--------------------------------------------|""".format(
+                        np.round(e, 3), np.round(tr, 3), np.round(val, 3)
+                        )
+            results += res
+        print(results)
+
+    @staticmethod
+    def model_summary(self, model: torch.nn.Module):
+
+        num = np.sum([p.nelement() for p in model.parameters()])
+
+        s = {"Net": num}
+        for n, layer in model.named_children():
+            num = np.sum([p.nelement() for p in layer.parameters()])
+            s.update({n: num})
+
+        print("Layers | Parameters")
+        for l, p in s.items():
+            print("{} | {}".format(l, p))
+
+
+class TrainingLoop(ABC, TrainerSetup):
 
     @abstractmethod
     def configure_optimizers(self, **kwargs):
@@ -143,19 +276,20 @@ class TrainingLoop(ABC):
     def after_backward(self, batch_idx):
         """This method is called just after `loss.backward()`"""
 
-    def __init__(self, args):
+    def __init__(self, args: DefaultArgs):
         super().__init__()
 
         self._sanity_check(args)
-
-        self.args_dictn = args.__dict__
 
         # self.model = ?
         self.base_dir = self._setup_basedir(args.base_dir)
 
         self.precision = args.precision
         self.load_dir = args.load_dir
-        self.save_dir = self._setup_savedir(args.save_dir)
+        self.save_dir = self._setup_savedir(args.save_dir, self.base_dir)
+        
+        self.save_epoch_dir = args.save_epoch_dir
+        self.early_stop_n = args.early_stop_n
 
         self.device = self.configure_devices(args)
         if self.gpus > 1:
@@ -176,41 +310,20 @@ class TrainingLoop(ABC):
         self.max_epochs = args.max_epochs        
         self.accumulation_steps = args.accumulation_steps
 
-        self.wandb_resume = args.wandb_resume
         self.fast_dev_run = args.fast_dev_run
 
-        self.project_name = args.project_name
-        self.wandb_run_name = args.wandb_run_name
-        self.wandb_run_id = args.wandb_run_id
-        self.wandb_off = args.wandb_off
-        self.wandb_dir = self.base_dir
+        self.wandb_args = {
+            "wandb_config": args.__dict__,
+            "wandb_resume": args.wandb_resume,
+            "project_name": args.project_name,
+            "wandb_run_name": args.wandb_run_name,
+            "wandb_run_id": args.wandb_run_id,
+            "wandb_off": args.wandb_off,
+            "wandb_dir": self.base_dir
+        }
 
         if self.precision == 'float16':
             self._setup_half()
-
-    def _setup_savedir(self, save_dir):
-        if save_dir:
-            if save_dir not in os.listdir(self.base_dir):
-                os.mkdir(f"{self.base_dir}/{save_dir}")
-            return save_dir
-
-    def _setup_basedir(self, base_dir):
-        if base_dir is None:
-            return "."
-        elif base_dir == ".":
-            return base_dir
-        elif base_dir not in os.listdir():
-            os.mkdir(base_dir)
-            print(f"training stuff will be saved in {base_dir}")
-            return base_dir
-
-    def _sanity_check(self, args):
-        if not hasattr(args, "__dict__"):
-            raise ValueError("Your argument class must have `dataclass` decorator")
-
-        for arg in DefaultArgs().__dict__:
-            if not hasattr(args, arg):
-                raise ValueError(f"Your config must have `{arg}`")
 
     def train_step(self, batch, batch_idx):
 
@@ -237,6 +350,7 @@ class TrainingLoop(ABC):
         self.gpus = torch.cuda.device_count()
         if self.gpus > 0:
             device = torch.device('cuda')
+            torch.backends.cudnn.benchmark = True
 
         if self.precision == 'mixed16':
             if args.tpus > 0:
@@ -253,38 +367,24 @@ class TrainingLoop(ABC):
                 raise ValueError("Can't set device to TPUs")
 
         print(f"Using {device}")
+        args.device = device
         return device
 
     def fit(self, tr_dataset, val_dataset):
 
-        self.setup_wandb()
+        self.setup_wandb(self.wandb_args)
 
         if self.fast_dev_run:
             print("fast_dev_run is set to True")
             tr_dataset = next(iter(tr_dataset))
-            val_datset = next(iter(val_dataset))
+            val_dataset = next(iter(val_dataset))
 
         try:
-            self.train(tr_dataset, val_dataset)
+            tr_metric, val_metric = self.train(tr_dataset, val_dataset)
+            self.display_metrics(self.max_epochs, tr_metric, val_metric)
         except KeyboardInterrupt:
             print('Interrupting through keyboard ======= Saving model weights')
             torch.save(self.model.state_dict(), 'keyboard-interrupted_'+self.save_path)
-
-    def setup_wandb(self):
-
-        # useful for testing
-        if self.wandb_off:
-            try: 
-                os.system('wandb off')
-            except:
-                raise ValueError("wandb not available")
-
-        if self.wandb_resume:
-            if self.wandb_run_id is None:
-                raise ValueError('wandb-run-id must be mentioned for resuming training')
-            wandb.init(resume=self.wandb_run_id)
-        else:
-            wandb.init(project=self.project_name, name=self.wandb_run_name, id=self.wandb_run_id, config=self.args_dictn, dir=self.wandb_dir)
 
     def _configure_scaler(self):
         if self.precision == 'mixed16':
@@ -293,6 +393,7 @@ class TrainingLoop(ABC):
             print('Training with mixed16')
             return torch.cuda.amp.GradScaler()
 
+    @torch.no_grad()
     def empty_grad(self):
         for param in self.model.parameters():
             param.grad = None
@@ -301,6 +402,9 @@ class TrainingLoop(ABC):
 
         # activating layers like dropout, batch-normalization for training
         self.model.train(True)
+
+        tr_metric = []
+        val_metric = []
 
         steps = 0 # updating under accumulation condition
         tr_loss = 0 # setting up tr_loss for accumulation
@@ -317,7 +421,7 @@ class TrainingLoop(ABC):
 
             # setting up progress bar to display
             desc = f"running epoch-{epoch}"
-            pbar = tqdm(enumerate(tr_dataset), total=len(tr_dataset), desc=desc, initial=0, leave=True)
+            pbar = tqdm(enumerate(tr_dataset), total=len(tr_dataset), desc=desc, initial=0, leave=False)
             for batch_idx, batch in pbar:
 
                 # will help in resuming training from last-saved batch_idx
@@ -387,7 +491,18 @@ class TrainingLoop(ABC):
                 'val_loss': val_loss.item()
                 }, commit=False)
 
+            tr_metric.append(np.mean(losses))
+            val_metric.append(val_loss.item())
+
+            if self.save_epoch_dir:
+                save_status = self.assert_epoch_saving(val_metric, mode="min")
+                if save_status:
+                    self.save_model_state_dict(f"{self.base_dir}/{self.save_epoch_dir}")
+                    self.save_training_state_dict(f"{self.base_dir}/{self.save_epoch_dir}")
+
             self.training_epoch_end(epoch, losses)
+            if self.early_stop_n:
+                self.stop_early(val_metric, self.early_stop_n, model="min")
 
         self.start_epoch += 1
 
@@ -397,6 +512,7 @@ class TrainingLoop(ABC):
             self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
         
         self.training_end()
+        return tr_metric, val_metric
 
     def mixed_optimizer_step(self):
         self.scaler.step(self.optimizer)
@@ -510,10 +626,8 @@ class TorchTrainer(TrainingLoop):
         This method should look something like this
 
             batch = batch.to(self.device)
-            # with torch.cuda.amp.autocast((self.precision=='mixed_16')):
             out = self(batch)
             loss = out.mean()
-            loss /= self.accumulation_steps
 
             return loss
         """
@@ -525,7 +639,6 @@ class TorchTrainer(TrainingLoop):
 
             batch = batch.to(self.device)
             with torch.no_grad():
-                # with torch.cuda.amp.autocast((self.precision=='mixed_16')):
                 out = self(batch)
                 loss = out.mean()
 
