@@ -13,17 +13,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 if torch.cuda.is_available():
-    print('GPUs available')
+    m1 = 'available'
 else:
-    print("GPUs not available")
+    m1 = "not available"
 
 try:
     import torch_xla
     import torch_xla.core.xla_model as xm
     import torch_xla.distributed.xla_multiprocessing as xmp
-    print("TPUs available")
+    m2 = "available"
 except:
-    print('TPUs not available')
+    m2 = 'not available'
 
 
 """
@@ -115,6 +115,18 @@ class DefaultArgs:
 
 
 class TrainerSetup(object):
+
+    print(
+          """
+             |-----------------------------------|
+             |    Device    |     Status         |
+             |-----------------------------------|
+                    GPU     |   {}    
+             |-----------------------------------|
+                    TPU     |   {}       
+             |-----------------------------------|
+          """.format(m1, m2)
+      )
 
     def __init__(self):
         """
