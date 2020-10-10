@@ -393,8 +393,17 @@ class TrainingLoop(ABC, TrainerSetup):
 
         try:
             tr_metric, val_metric = self.train(tr_dataset, val_dataset)
+            
+            if self.save_dir:
+            
+                print("Saving model and training related stuff")
+                self.save_model_state_dict(f"{self.base_dir}/{self.save_dir}")
+                self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
+            
             self.display_metrics(self.max_epochs, tr_metric, val_metric)
+        
         except KeyboardInterrupt:
+        
             print('Interrupting through keyboard ======= Saving model weights')
             torch.save(self.model.state_dict(), 'keyboard-interrupted_'+self.save_path)
 
@@ -412,20 +421,17 @@ class TrainingLoop(ABC, TrainerSetup):
 
     def train(self, tr_dataset, val_dataset):
 
-        # activating layers like dropout, batch-normalization for training
-        self.model.train(True)
-
         tr_metric = []
         val_metric = []
 
         steps = 0 # updating under accumulation condition
-        tr_loss = 0 # setting up tr_loss for accumulation
 
         # setting up epochs (handling resuming)
         epochs = range(self.start_epoch, self.max_epochs)
         for epoch in epochs:
 
-            # accumulator of training-loss
+            # setting up tr_loss for accumulation
+            tr_loss = 0
             losses = []
 
             # helping in resuming
@@ -444,6 +450,7 @@ class TrainingLoop(ABC, TrainerSetup):
 
                 self.start_batch_idx += 1
 
+                self.model.train(True)
                 # simply doing forward-propogation
                 loss = self.train_step(batch, batch_idx)
                 loss /= self.accumulation_steps
@@ -518,11 +525,6 @@ class TrainingLoop(ABC, TrainerSetup):
 
         self.start_epoch += 1
 
-        if self.save_dir:
-            print("Saving model and training related stuff")
-            self.save_model_state_dict(f"{self.base_dir}/{self.save_dir}")
-            self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
-        
         self.training_end()
         return tr_metric, val_metric
 
