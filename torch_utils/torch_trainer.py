@@ -81,6 +81,7 @@ USAGE:
 
 """
 
+
 @dataclass
 class DefaultArgs:
 
@@ -96,6 +97,7 @@ class DefaultArgs:
     load_dir: str = None
     save_epoch_dir: str = None
     early_stop_n: int = None
+    epoch_saving_n: int = 3
 
     fast_dev_run: bool = False
 
@@ -134,7 +136,7 @@ class TrainerSetup(object):
         """
 
     @staticmethod
-    def assert_epoch_saving(val_metric: list, mode: str = "min"):
+    def assert_epoch_saving(val_metric: list, n: int = 3, mode: str = "min"):
         """
         Allows saving if loss decreases / accuracy increases
         n = 'min' corresponds to val_metric being loss-metric
@@ -144,15 +146,17 @@ class TrainerSetup(object):
             val_metric should be having current value of loss/accuracy
         """
         status = False
-        if len(val_metric) < 2:
+        if len(val_metric) < n+1:
             return True
 
         current_val = val_metric[-1]
-        compr = val_metric[-2]
+        compr = val_metric[-n-2:-2]
         if mode == "min":
+            compr = np.min(compr)
             if current_val < compr:
                 status = True
         elif mode == "max":
+            compr = np.max(compr)
             if current_val > compr:
                 status = True
         else:
@@ -179,8 +183,7 @@ class TrainerSetup(object):
 
         return stop_status
 
-    @staticmethod
-    def stop_early(val_metric: list, n: int = None, mode="min"):
+    def stop_early(self, val_metric: list, n: int = None, mode="min"):
         status = self.assert_early_stop(val_metric, n, mode)
         if status:
             raise KeyboardInterrupt("Model training stopped due to early-stopping")
@@ -200,6 +203,7 @@ class TrainerSetup(object):
             if save_dir not in os.listdir(base_dir):
                 os.mkdir(f"{base_dir}/{save_dir}")
             return save_dir
+        return save_dir
 
     @staticmethod
     def _setup_basedir(base_dir: str):
@@ -218,7 +222,7 @@ class TrainerSetup(object):
         # useful for testing
         if args["wandb_off"]:
             try: 
-                os.system('wandb off')
+                os.system('wandb offline')
             except:
                 raise ValueError("wandb not available")
 
@@ -300,8 +304,9 @@ class TrainingLoop(ABC, TrainerSetup):
         self.load_dir = args.load_dir
         self.save_dir = self._setup_savedir(args.save_dir, self.base_dir)
         
-        self.save_epoch_dir = args.save_epoch_dir
+        self.save_epoch_dir = self._setup_savedir(args.save_epoch_dir, self.base_dir)
         self.early_stop_n = args.early_stop_n
+        self.epoch_saving_n = args.epoch_saving_n
 
         self.device = self.configure_devices(args)
         if self.gpus > 1:
@@ -382,7 +387,9 @@ class TrainingLoop(ABC, TrainerSetup):
         args.device = device
         return device
 
-    def fit(self, tr_dataset, val_dataset):
+    def fit(self, 
+            tr_dataset: torch.utils.data.DataLoader, 
+            val_dataset: torch.utils.data.DataLoader):
 
         self.setup_wandb(self.wandb_args)
 
@@ -394,18 +401,12 @@ class TrainingLoop(ABC, TrainerSetup):
         try:
             tr_metric, val_metric = self.train(tr_dataset, val_dataset)
             
-            if self.save_dir:
-            
-                print("Saving model and training related stuff")
-                self.save_model_state_dict(f"{self.base_dir}/{self.save_dir}")
-                self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
-            
             self.display_metrics(self.max_epochs, tr_metric, val_metric)
         
         except KeyboardInterrupt:
         
             print('Interrupting through keyboard ======= Saving model weights')
-            torch.save(self.model.state_dict(), 'keyboard-interrupted_'+self.save_path)
+            torch.save(self.model.state_dict(), 'keyboard-interrupted_wts')
 
     def _configure_scaler(self):
         if self.precision == 'mixed16':
@@ -507,14 +508,14 @@ class TrainingLoop(ABC, TrainerSetup):
             wandb.log({
                 'epoch': epoch,
                 'tr_loss': np.mean(losses),
-                'val_loss': val_loss.item()
+                'val_loss': val_loss
                 }, commit=False)
 
             tr_metric.append(np.mean(losses))
-            val_metric.append(val_loss.item())
+            val_metric.append(val_loss)
 
             if self.save_epoch_dir:
-                save_status = self.assert_epoch_saving(val_metric, mode="min")
+                save_status = self.assert_epoch_saving(val_metric, n=self.epoch_saving_n, mode="min")
                 if save_status:
                     self.save_model_state_dict(f"{self.base_dir}/{self.save_epoch_dir}")
                     self.save_training_state_dict(f"{self.base_dir}/{self.save_epoch_dir}")
@@ -526,6 +527,11 @@ class TrainingLoop(ABC, TrainerSetup):
         self.start_epoch += 1
 
         self.training_end()
+        if self.save_dir:    
+            print("Saving model and training related stuff")
+            self.save_model_state_dict(f"{self.base_dir}/{self.save_dir}")
+            self.save_training_state_dict(f"{self.base_dir}/{self.save_dir}")
+    
         return tr_metric, val_metric
 
     def mixed_optimizer_step(self):
@@ -536,17 +542,20 @@ class TrainingLoop(ABC, TrainerSetup):
         # disabling layers like dropout, batch-normalization
         self.model.train(False)
 
+        running_loss = []
+
         desc = 'Validating ....'
         pbar = tqdm(val_dataset, total=len(val_dataset), desc=desc, initial=0, leave=False)
         for batch in pbar:
             val_loss = self.val_step(batch)
             pbar.set_postfix(val_loss=val_loss.item())
+            running_loss.append(val_loss.item())
 
-        return val_loss
+        return np.mean(running_loss)
 
     def save_training_state_dict(self, save_dir: str):
 
-        path = f"{save_dir}/model.pt"
+        path = f"{save_dir}/training.tar"
 
         # defining what all to save
         state_dict = {
