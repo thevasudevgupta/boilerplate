@@ -1,6 +1,6 @@
 # torch-trainer
 
-This is simple trainer for PyTorch users (tested for PyTorch-1.6).
+This is simple trainer for PyTorch users (tested for PyTorch-1.7).
 
 ## Supported features
 
@@ -71,23 +71,18 @@ trainer.fit(tr_dataset, val_dataset)
 
 ## Configuration used in torch-trainer
 
-Lots of args are involved in torch-trainer. You can either inherit your config-class from torch_utils or define your config-class containing default-args. **Your config-class must be decorated with `python dataclass`**
-
 ```python
 
-from dataclasses import dataclass
-from torch_utils import DefaultArgs
+from torch_utils import TrainerConfig
 
-@dataclass
-class Config(DefaultArgs):
+args = TrainerConfig.from_default()
+args.update(
+    {
+        "lr": 2e-5,
+        "save_dir": "wts"
+    }
+)
 
-    # pass your args
-    lr: float = 2e-5
-    ......
-
-    # If want to update defaut_args; just pass it here only
-    save_dir: str = 'weights'
-    .......
 
 # Default Arguments
 """

@@ -10,7 +10,6 @@ import wandb
 from tqdm import tqdm
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 if torch.cuda.is_available():
     m1 = 'available'
@@ -29,7 +28,7 @@ except:
 """
 USAGE:
 
-    from torch_utils import TorchTrainer, DefaultArgs
+    from torch_utils import TorchTrainer, TrainerConfig
 
     class Trainer(TorchTrainer):
 
@@ -61,16 +60,11 @@ USAGE:
     tr_dataset = .....
     val_dataset = .....
 
-    @dataclass
-    class Config(DefaultArgs):
 
-        # pass your args
-        lr: float = 2e-5
-        ......
-
-        # If want to update defaut_args; just pass it here only
-        save_dir: str = 'weights'
-        .......
+    args = TrainerConfig.from_default()
+    args.update(
+        {"lr": 2e-5, "save_dir": "wts"}
+        )
 
     trainer = Trainer(model, args)
     trainer.fit(tr_dataset, val_dataset)
@@ -81,39 +75,45 @@ USAGE:
 
 """
 
+class TrainerConfig(dict):
 
-@dataclass
-class DefaultArgs:
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-    # root dir for any kind of saving
-    base_dir: str = "."
+        self.kwargs = kwargs
+        for k, v in kwargs.item():
+            setattr(self, k, v)
 
-    # args used in TorchTrainer
-    map_location: torch.device = torch.device("cuda:0")
+    def __repr__(self):
+        return f"{self.__name__} {self.kwargs}"
 
-    # model weights will be in `.pt` file 
-    # while other training stuff will be in `.tar`
-    save_dir: str = "resuming"
-    load_dir: str = None
-    save_epoch_dir: str = None
-    early_stop_n: int = None
-    epoch_saving_n: int = 3
+    def update(self, kwargs: dict):
+        for k, v in kwargs.item():
+            setattr(self, k, v)
+        self.kwargs.update(kwargs)
 
-    fast_dev_run: bool = False
-
-    project_name: str = None
-    wandb_run_name: str = None
-    wandb_off: bool = False
-
-    # will be helpful in resuming
-    wandb_resume: bool = False
-    wandb_run_id: str = None
-    
-    max_epochs: int = 5
-    
-    accumulation_steps: int = 1
-    tpus: int = 0
-    precision: str = 'float32'
+    @classmethod
+    def from_default(cls):
+        return cls(base_dir=".",
+                map_location=torch.device("cuda:0"),
+                # model weights will be in `.pt` file 
+                # while other training stuff will be in `.tar`  
+                save_dir="resuming",
+                load_dir=None,
+                save_epoch_dir=None,
+                early_stop_n=None,
+                epoch_saving_n=3,
+                fast_dev_run=False,
+                project_name=None,
+                wandb_run_name=None,
+                wandb_off=False,
+                # will be helpful in resuming
+                wandb_resume=False,
+                wandb_run_id=None,
+                max_epochs=5,
+                accumulation_steps=1,
+                tpus=0,
+                precision='float32')
 
 
 class TrainerSetup(object):
@@ -330,7 +330,7 @@ class TrainingLoop(ABC, TrainerSetup):
         self.fast_dev_run = args.fast_dev_run
 
         self.wandb_args = {
-            "wandb_config": args.__dict__,
+            "wandb_config": args,
             "wandb_resume": args.wandb_resume,
             "project_name": args.project_name,
             "wandb_run_name": args.wandb_run_name,
