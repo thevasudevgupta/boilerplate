@@ -1,6 +1,6 @@
 # torch-trainer
 
-This is simple trainer for PyTorch users (tested for PyTorch-1.7).
+This repositary contains boilerplate code used in every torch project (tested for PyTorch-1.7).
 
 ## Supported features
 
@@ -16,14 +16,13 @@ This is simple trainer for PyTorch users (tested for PyTorch-1.7).
 
 ```python
 
-from torch_utils import TorchTrainer
+from torch_utils import TorchTrainer, TrainerConfig
 
 class Trainer(TorchTrainer):
 
-    def __init__(self, model: nn.Module, args: DefaultArgs):
+    def __init__(self, model, args):
         self.model = model
         self.lr = args.lr
-        # define args whatever you need
 
         # call this at end only
         super().__init__(args)
@@ -58,6 +57,16 @@ model = .....
 tr_dataset = .....
 val_dataset = .....
 
+# load default args
+args = TrainerConfig.from_default()
+# change default args as per need
+args.update(
+    {
+        "lr": 2e-5,
+        "save_dir": "wts"
+    }
+)
+
 trainer = Trainer(model, args)
 trainer.fit(tr_dataset, val_dataset)
 # Enjoy training ....
@@ -72,39 +81,27 @@ trainer.fit(tr_dataset, val_dataset)
 ## Configuration used in torch-trainer
 
 ```python
-
-from torch_utils import TrainerConfig
-
-args = TrainerConfig.from_default()
-args.update(
-    {
-        "lr": 2e-5,
-        "save_dir": "wts"
-    }
-)
-
-
 # Default Arguments
 """
-    base_dir (str) : root dir for any kind of saving (default = ".")
-    map_location (torch.device) : argument used in torch.load() while loading model-state-dict (default = torch.device("cuda:0"))
+    base_dir :: str : root dir for any kind of saving (default = ".")
+    map_location :: torch.device : argument used in torch.load() while loading model-state-dict (default = torch.device("cuda:0"))
 
-    save_dir (str) : If specified training stuff and model weights will be saved in this dir (default = None)
-    load_dir (str) : If specified training stuff and model weights will be loaded from this dir (default = None)
+    save_dir :: str : If specified training stuff and model weights will be saved in this dir (default = None)
+    load_dir :: str : If specified training stuff and model weights will be loaded from this dir (default = None)
 
-    project_name (str) : Project name in wandb (default = None)
-    wandb_run_name (str) : run name in wandb (default = None)
-    wandb_off (bool) : If you want to disable wandb; useful for testing (default = False)
+    project_name :: str : Project name in wandb (default = None)
+    wandb_run_name :: str : run name in wandb (default = None)
+    wandb_off :: bool : If you want to disable wandb; useful for testing (default = False)
 
-    max_epochs (int) : No of epochs (default = 5)
+    max_epochs :: int : No of epochs (default = 5)
 
-    early_stop_n (int) : Enable early stopping by specifying how many epochs to look-up before stopping (default = None)
-    save_epoch_dir (str) : If specified, ckpt will be saved at epoch level if loss decreases
+    early_stop_n :: int : Enable early stopping by specifying how many epochs to look-up before stopping (default = None)
+    save_epoch_dir :: str : If specified, ckpt will be saved at epoch level if loss decreases
 
-    accumulation_steps (int) : No of accumulation steps (default = 1)
-    precision ('float32' or 'mixed16') : Precision during training (default = 'float32')
+    accumulation_steps :: int : No of accumulation steps (default = 1)
+    precision :: 'float32' or 'mixed16' : Precision during training (default = 'float32')
 
-    tpus (int) : specify 1 incase of using single tpu (default = 0)
+    tpus :: int : specify 1 incase of using single tpu (default = 0)
 """
 ```
 

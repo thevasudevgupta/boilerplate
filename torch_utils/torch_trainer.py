@@ -75,22 +75,28 @@ USAGE:
 
 """
 
-class TrainerConfig(dict):
+class TrainerConfig(object):
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
 
         self.kwargs = kwargs
-        for k, v in kwargs.item():
+        for k, v in kwargs.items():
             setattr(self, k, v)
 
     def __repr__(self):
-        return f"{self.__name__} {self.kwargs}"
+        return f"TrainerConfig {self.kwargs}"
 
     def update(self, kwargs: dict):
-        for k, v in kwargs.item():
+        for k, v in kwargs.items():
             setattr(self, k, v)
         self.kwargs.update(kwargs)
+
+    def __getitem__(self, k):
+        return getattr(self, k)
+
+    @property
+    def __dict__(self):
+        return self.kwargs
 
     @classmethod
     def from_default(cls):
@@ -189,13 +195,9 @@ class TrainerSetup(object):
             raise KeyboardInterrupt("Model training stopped due to early-stopping")
 
     @staticmethod
-    def _sanity_check(args: DefaultArgs):
-        if not hasattr(args, "__dict__"):
-            raise ValueError("Your argument class must have `dataclass` decorator")
-
-        for arg in DefaultArgs().__dict__:
-            if not hasattr(args, arg):
-                raise ValueError(f"Your config must have `{arg}`")
+    def _sanity_check(args: TrainerConfig):
+        if not isinstance(args, TrainerConfig):
+            raise ValueError("Your argument class must be inherited from TrainerConfig")
 
     @staticmethod
     def _setup_savedir(save_dir: str, base_dir: str):
@@ -292,7 +294,7 @@ class TrainingLoop(ABC, TrainerSetup):
     def after_backward(self, batch_idx):
         """This method is called just after `loss.backward()`"""
 
-    def __init__(self, args: DefaultArgs):
+    def __init__(self, args: TrainerConfig):
         super().__init__()
 
         self._sanity_check(args)
