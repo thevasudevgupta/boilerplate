@@ -28,7 +28,7 @@ except:
 """
 USAGE:
 
-    from torch_utils import TorchTrainer, TrainerConfig
+    from fastdl import TorchTrainer, TrainerConfig
 
     class Trainer(TorchTrainer):
 
@@ -123,18 +123,6 @@ class TrainerConfig(object):
 
 
 class TrainerSetup(object):
-
-    print(
-          """
-             |-----------------------------------|
-             |    Device    |     Status         |
-             |-----------------------------------|
-                    GPU     |   {}    
-             |-----------------------------------|
-                    TPU     |   {}       
-             |-----------------------------------|
-          """.format(m1, m2)
-      )
 
     def __init__(self):
         """
@@ -636,6 +624,18 @@ class TrainingLoop(ABC, TrainerSetup):
 class TorchTrainer(TrainingLoop):
 
     def __init__(self, args):
+
+        print(
+            """
+                |-----------------------------------|
+                |    Device    |     Status         |
+                |-----------------------------------|
+                        GPU     |   {}    
+                |-----------------------------------|
+                        TPU     |   {}       
+                |-----------------------------------|
+            """.format(m1, m2)
+        )
         TrainingLoop.__init__(self, args)
 
     @abstractmethod

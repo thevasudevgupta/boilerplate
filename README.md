@@ -1,22 +1,21 @@
-# torch-trainer
+# fastdl
 
-This repositary contains boilerplate code used in every torch project (tested for PyTorch-1.7).
+fastdl is the deep learning library built on the top of `pytorch` & `deepspeed` for making the your deep learning journey more smooth and fast.
 
 ## Supported features
 
 - Single trainer for most of use-cases
-- No change in your existing code, if you switch to your trainer
+- Full support to distributed training on gpus (thanks to deepspeed!)
 - Ease of use & getting rid of boiler-plate code
 - Automatic logging with wandb
-- Cool progress-bar with no extra code
 - Early stopping and automatic saving
 - Training with mixed-precision
 - Gradient Accumulation
-- Switching to GPU/TPU with no extra code
+- Switching between CPU/GPU/TPU with no code change
 
 ```python
 
-from torch_utils import TorchTrainer, TrainerConfig
+from fastdl import TorchTrainer, TrainerConfig
 
 class Trainer(TorchTrainer):
 
@@ -42,6 +41,7 @@ class Trainer(TorchTrainer):
 
     def validation_step(self, batch):
         # This method should look something like this
+
         batch = batch.to(self.device)
 
         with torch.no_grad():
@@ -72,16 +72,9 @@ trainer.fit(tr_dataset, val_dataset)
 # Enjoy training ....
 ```
 
-### Note:
-
-- Currently, this can't be used with models involving multiple optimizers (like GANs).
-- Currently only single GPU & Single TPU are supported. 
-- Don't forget to send your batch to `self.device`, model will be automatically transferred to `self.device` (you need not care that). `self.device` will be automatically set to GPU (when GPU is available) or to TPU (when tpu=1 in config-class).
-
-## Configuration used in torch-trainer
+## Arguments
 
 ```python
-# Default Arguments
 """
     base_dir :: str : root dir for any kind of saving (default = ".")
     map_location :: torch.device : argument used in torch.load() while loading model-state-dict (default = torch.device("cuda:0"))
@@ -105,16 +98,14 @@ trainer.fit(tr_dataset, val_dataset)
 """
 ```
 
-### Note:
+### Notes
 
+- Currently, this can't be used with models involving multiple optimizers (like GANs).
+- Don't forget to send your batch to `self.device`, model will be automatically transferred to `self.device` (you need not care that). `self.device` will be automatically set to GPU (when GPU is available) or to TPU (when tpu=1 in config-class).
 - Model weights will be in `.pt` file while other training stuff will be in `.tar`.
 - Run following command before specifying tpu=1: `!pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl`
 
+## Coming Soon :)
 
-## TODO
-
-- [ ] Enable training for models involving multiple optimizers (Like GANs)
-- [ ] Enable support for multiple GPUs
-- [ ] Enable support for multiple TPUs
-
-**Its very boring & time-consuming to write your own trainer every time. So feel free to use it, customize it as per your own needs.**
+- [ ] Training models involving multiple optimizers (Like GANs)
+- [ ] Support for multiple TPUs
