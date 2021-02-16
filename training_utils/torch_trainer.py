@@ -28,7 +28,7 @@ except:
 """
 USAGE:
 
-    from fastdl import TorchTrainer, TrainerConfig
+    from torch_trainer import TorchTrainer, TrainerConfig
 
     class Trainer(TorchTrainer):
 
@@ -259,7 +259,7 @@ class TrainerSetup(object):
 class TrainingLoop(ABC, TrainerSetup):
 
     @abstractmethod
-    def configure_optimizers(self, **kwargs):
+    def fetch_optimizers(self, **kwargs):
         """This method must be implemented in the class inherited from this class"""
 
     @abstractmethod
@@ -307,7 +307,7 @@ class TrainingLoop(ABC, TrainerSetup):
             self.load_model_state_dict(f"{self.base_dir}/{self.load_dir}")
         self.model.to(self.device)
 
-        self.optimizer = self.configure_optimizers()
+        self.optimizer = self.fetch_optimizers()
         self.scaler = self._configure_scaler()
         self.start_epoch = 0
         self.start_batch_idx = 0
@@ -639,7 +639,7 @@ class TorchTrainer(TrainingLoop):
         TrainingLoop.__init__(self, args)
 
     @abstractmethod
-    def configure_optimizers(self):
+    def fetch_optimizers(self):
         """
         Return:
             `torch.optim` object
