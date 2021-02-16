@@ -3,11 +3,8 @@
 Let's set up your boilerplate code ....
 
 ```shell
-# create project-dir
-mkdir myproject && cd myproject
-
-# Just run this command & you are good to go :)
-cookiecutter https://github.com/vasudevgupta7/boilerplate
+# Just clone this repo & you are good to go :)
+git clone https://github.com/vasudevgupta7/boilerplate
 ```
 
 ## Coming Soon :)
