@@ -1,28 +1,19 @@
-# boilerplate
+# torch_trainer
 
-Let's set up your boiler-plate code ....
-
-```shell
-# Just run this command & you are good to go :)
-cookiecutter https://github.com/vasudevgupta7/boilerplate
-```
-
-fastdl is the deep learning library built on the top of `pytorch` & `deepspeed` for making the your deep learning journey more smooth and fast.
+torch_trainer is the simple trainer built on the top of `pytorch` for making the your deep learning journey more smooth and fast.
 
 ## Supported features
 
 - Single trainer for most of use-cases
-- Full support to distributed training on gpus (thanks to deepspeed!)
 - Ease of use & getting rid of boiler-plate code
 - Automatic logging with wandb
 - Early stopping and automatic saving
-- Training with mixed-precision
 - Gradient Accumulation
-- Switching between CPU/GPU/TPU with no code change
+- Switching between CPU/GPU with no code change
 
 ```python
 
-from fastdl import TorchTrainer, TrainerConfig
+from torch_trainer import TorchTrainer, TrainerConfig
 
 class Trainer(TorchTrainer):
 
@@ -33,7 +24,7 @@ class Trainer(TorchTrainer):
         # call this at end only
         super().__init__(args)
 
-    def configure_optimizers(self):
+    def fetch_optimizers(self):
         return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
     def training_step(self, batch, batch_idx):
@@ -99,9 +90,6 @@ trainer.fit(tr_dataset, val_dataset)
     save_epoch_dir :: str : If specified, ckpt will be saved at epoch level if loss decreases
 
     accumulation_steps :: int : No of accumulation steps (default = 1)
-    precision :: 'float32' or 'mixed16' : Precision during training (default = 'float32')
-
-    tpus :: int : specify 1 incase of using single tpu (default = 0)
 """
 ```
 
@@ -110,7 +98,7 @@ trainer.fit(tr_dataset, val_dataset)
 - Currently, this can't be used with models involving multiple optimizers (like GANs).
 - Don't forget to send your batch to `self.device`, model will be automatically transferred to `self.device` (you need not care that). `self.device` will be automatically set to GPU (when GPU is available) or to TPU (when tpu=1 in config-class).
 - Model weights will be in `.pt` file while other training stuff will be in `.tar`.
-- Run following command before specifying tpu=1: `!pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl`
+<!-- - Run following command before specifying tpu=1: `!pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl` -->
 
 ## Coming Soon :)
 

@@ -3,3 +3,4 @@ numpy
 wandb
 tqdm
 PyYAML
+huggingface_hub
