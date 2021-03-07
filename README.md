@@ -1,6 +1,6 @@
 # boilerplate
 
-Let's set up your boilerplate code ....
+Let me set your boilerplate code ....
 
 ```shell
 # Just clone this repo & you are good to go :)
