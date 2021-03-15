@@ -77,6 +77,7 @@ USAGE:
 
 """
 
+
 class TrainerConfig(object):
 
     def __init__(self, **kwargs):
@@ -300,20 +301,19 @@ class TrainingLoop(ABC, TrainerSetup):
         self.model = None # assign model to your `Trainer` class
         self.base_dir = self._setup_basedir(args.base_dir)
 
-        self.load_dir = args.load_dir
-        self.save_dir = self._setup_savedir(args.save_dir, self.base_dir)
-        
+        self.load_dir = args.load_dir        
         self.save_epoch_dir = self._setup_savedir(args.save_epoch_dir, self.base_dir)
+
         self.early_stop_n = args.early_stop_n
         self.epoch_saving_n = args.epoch_saving_n
 
-        self.device = self.setup_devices(args)
+        self.device = self.setup_hardware(args)
         if self.gpus > 1:
             self.model = torch.nn.DataParallel(self.model)
 
         if self.load_dir:
             self.map_location = args.map_location
-            self.load_model_state_dict(f"{self.base_dir}/{self.load_dir}")
+            self.load_model_state_dict(os.path.join(self.base_dir, self.load_dir))
         self.model.to(self.device)
 
         self.optimizer = self.fetch_optimizers()
@@ -322,7 +322,7 @@ class TrainingLoop(ABC, TrainerSetup):
         if self.load_dir:
             self.load_training_state_dict(self.load_dir)
 
-        self.max_epochs = args.max_epochs        
+        self.max_epochs = args.max_epochs
         self.accumulation_steps = args.accumulation_steps
 
         self.wandb_args = {
@@ -341,7 +341,7 @@ class TrainingLoop(ABC, TrainerSetup):
     def val_step(self, batch):
         return self.validation_step(batch)
 
-    def setup_devices(self, args):
+    def setup_hardware(self, args):
 
         device = torch.device('cpu')
 
@@ -363,8 +363,8 @@ class TrainingLoop(ABC, TrainerSetup):
         args.device = device
         return device
 
-    def fit(self, 
-            tr_dataset: torch.utils.data.DataLoader, 
+    def fit(self,
+            tr_dataset: torch.utils.data.DataLoader,
             val_dataset: torch.utils.data.DataLoader):
 
         self.setup_wandb(self.wandb_args)
@@ -379,7 +379,7 @@ class TrainingLoop(ABC, TrainerSetup):
             torch.save(self.model.state_dict(), 'keyboard-interrupted_wts.bin')
 
     @torch.no_grad()
-    def empty_grad(self):
+    def empty_grad_(self):
         for param in self.model.parameters():
             param.grad = None
 
@@ -442,7 +442,7 @@ class TrainingLoop(ABC, TrainerSetup):
                     pbar.set_postfix(tr_loss=tr_loss)
 
                     # emptying gradients in very efficient way
-                    self.empty_grad()
+                    self.empty_grad_()
 
                     # accumulating losses for training-loss at epoch end
                     losses.append(tr_loss)
