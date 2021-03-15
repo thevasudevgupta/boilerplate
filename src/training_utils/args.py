@@ -10,8 +10,14 @@ class TrainingArgs:
     
     tr_file_path: str = None
     val_file_path: str = None
-
-    save_path: str = None
+    hub_id: str = None
+    
+    # inside args
     base_dir: str = None
+    save_epoch_dir: str = None
+    accumulation_steps: str = 1
+    max_epochs: str = 5
+    project_name: str = None
+    wandb_run_name: str = None
 
 baseline = TrainingArgs()

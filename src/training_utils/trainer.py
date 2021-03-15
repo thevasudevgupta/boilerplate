@@ -1,5 +1,7 @@
 
+import os
 import torch
+
 from .torch_trainer import TorchTrainer
 
 
@@ -33,11 +35,11 @@ class Trainer(TorchTrainer):
         loss = out["loss"].mean()
         return loss
 
-    def training_epoch_end(self, epoch, losses):
+    def training_epoch_end(self, epoch, tr_metric, val_metric):
         # saving state_dict at epoch level
         self.save_training_state_dict(self.args.base_dir)
-        self.save_pretrained(self.args.save_path)
+        path = os.path.join(self.args.base_dir, self.args.save_epoch_dir+f'-e{epoch}')
+        self.model.save_pretrained(path)
 
-    def save_pretrained(self, path: str):
-        module = self.model.module if hasattr(self.model, "module") else self.model
-        torch.save(module.state_dict(), path)
+        if self.args.hub_id:
+            self.model.push_to_hub(path, model_id=self.args.hub_id, commit_message=f"add epoch-{epoch} ckpt")

@@ -1,6 +1,6 @@
 # torch_trainer
 
-torch_trainer is the simple trainer built on the top of `pytorch` for making the your deep learning journey more smooth and fast.
+`torch_trainer` is the simple trainer built on the top of `pytorch` for making the your deep learning journey more smooth and fast.
 
 ## Supported features
 
@@ -48,6 +48,7 @@ class Trainer(TorchTrainer):
 
         return loss
 
+
 # define model architecture
 model = .....
 
@@ -61,13 +62,12 @@ args = TrainerConfig.from_default()
 args.update(
     {
         "lr": 2e-5,
-        "save_dir": "wts"
+        "save_epoch_dir": "ckpt"
     }
 )
 
 trainer = Trainer(model, args)
-trainer.fit(tr_dataset, val_dataset)
-# Enjoy training ....
+trainer.fit(tr_dataset, val_dataset) # training initiated
 ```
 
 ## Arguments
@@ -77,18 +77,16 @@ trainer.fit(tr_dataset, val_dataset)
     base_dir :: str : root dir for any kind of saving (default = ".")
     map_location :: torch.device : argument used in torch.load() while loading model-state-dict (default = torch.device("cuda:0"))
 
-    save_dir :: str : If specified training stuff and model weights will be saved in this dir (default = None)
     load_dir :: str : If specified training stuff and model weights will be loaded from this dir (default = None)
+    save_epoch_dir :: str : If specified, ckpt will be saved at epoch level if loss decreases
 
     project_name :: str : Project name in wandb (default = None)
     wandb_run_name :: str : run name in wandb (default = None)
     wandb_off :: bool : If you want to disable wandb; useful for testing (default = False)
 
-    max_epochs :: int : No of epochs (default = 5)
-
     early_stop_n :: int : Enable early stopping by specifying how many epochs to look-up before stopping (default = None)
-    save_epoch_dir :: str : If specified, ckpt will be saved at epoch level if loss decreases
 
+    max_epochs :: int : No of epochs (default = 5)
     accumulation_steps :: int : No of accumulation steps (default = 1)
 """
 ```
@@ -97,10 +95,11 @@ trainer.fit(tr_dataset, val_dataset)
 
 - Currently, this can't be used with models involving multiple optimizers (like GANs).
 - Don't forget to send your batch to `self.device`, model will be automatically transferred to `self.device` (you need not care that). `self.device` will be automatically set to GPU (when GPU is available) or to TPU (when tpu=1 in config-class).
-- Model weights will be in `.pt` file while other training stuff will be in `.tar`.
-<!-- - Run following command before specifying tpu=1: `!pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl` -->
+- Model weights will be in `pytorch_model.bin` file while other training stuff will be in `training.tar`.
+- Run following command before specifying tpu=1: `!pip install cloud-tpu-client==0.10 https://storage.googleapis.com/tpu-pytorch/wheels/torch_xla-1.6-cp36-cp36m-linux_x86_64.whl`
 
-## Coming Soon :)
+## Coming Soon
 
 - [ ] Training models involving multiple optimizers (Like GANs)
 - [ ] Support for multiple TPUs
+- [ ] Distributed support on multiple GPUs

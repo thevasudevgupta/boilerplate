@@ -31,20 +31,24 @@ class DataLoader(object):
         return tr_dataset, val_dataset
 
     def train_dataloader(self, tr_dataset):
-        return torch.utils.data.DataLoader(tr_dataset,
-                                            pin_memory=True,
-                                            shuffle=True,
-                                            batch_size=self.batch_size,
-                                            collate_fn=self.collate_fn,
-                                            num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(
+            tr_dataset,
+            pin_memory=True,
+            shuffle=True,
+            batch_size=self.batch_size,
+            collate_fn=self.collate_fn,
+            num_workers=self.num_workers
+        )
 
     def val_dataloader(self, val_dataset):
-        return torch.utils.data.DataLoader(val_dataset,
-                                            pin_memory=True,
-                                            shuffle=False,
-                                            batch_size=self.batch_size,
-                                            collate_fn=self.collate_fn,
-                                            num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(
+            val_dataset,
+            pin_memory=True,
+            shuffle=False,
+            batch_size=self.batch_size,
+            collate_fn=self.collate_fn,
+            num_workers=self.num_workers
+        )
 
     def collate_fn(self, features):
         # update your collate function here
