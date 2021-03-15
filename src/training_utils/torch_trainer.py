@@ -3,26 +3,25 @@
 
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 import os
-import wandb
-from tqdm import tqdm
-
 from abc import ABC, abstractmethod
 
-if torch.cuda.is_available():
-    m1 = 'available'
-else:
-    m1 = "not available"
+import wandb
+import logging
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+if not torch.cuda.is_available():
+    logger.warning("CUDA is not available => Training will happen on CPU")
 
 try:
-    import torch_xla
-    import torch_xla.core.xla_model as xm
-    import torch_xla.distributed.xla_multiprocessing as xmp
-    m2 = "available"
-except:
-    m2 = 'not available'
+    import deepspeed
+except ImportError:
+    logger.warning("DeepSpeed is not available => RUN `pip install deepspeed` for out of box performance, if using GPU")
 
 
 """
@@ -31,26 +30,32 @@ USAGE:
     >>> from torch_trainer import TorchTrainer, TrainerConfig
 
     >>> class Trainer(TorchTrainer):
-
             def __init__(self, model, args):
                 self.model = model
 
                 # call this at end only
                 super().__init__(args)
 
-            def fetch_optimizers(self):
+            def setup_optimizer(self):
                 '''
                     ....
                 '''
                 return
 
-            def training_step(self, batch, batch_idx):
+            def setup_scheduler(self):
                 '''
                     ....
                 '''
                 return
 
-            def validation_step(self, batch):
+
+            def train_batch(self, batch, batch_idx):
+                '''
+                    ....
+                '''
+                return
+
+            def validate_batch(self, batch):
                 '''
                     ....
                 '''
@@ -258,10 +263,10 @@ class TrainerSetup(object):
             print("{} | {}".format(l, p))
 
 
-class TrainingLoop(ABC, TrainerSetup):
+class TrainerEngine(ABC, TrainerSetup):
 
     @abstractmethod
-    def fetch_optimizers(self, **kwargs):
+    def setup_optimizer(self, **kwargs):
         """This method must be implemented in the class inherited from this class"""
 
     @abstractmethod
@@ -307,7 +312,7 @@ class TrainingLoop(ABC, TrainerSetup):
         self.early_stop_n = args.early_stop_n
         self.epoch_saving_n = args.epoch_saving_n
 
-        self.device = self.setup_hardware(args)
+        self.device, enable_deepspeed = self.setup_hardware(args)
         if self.gpus > 1:
             self.model = torch.nn.DataParallel(self.model)
 
@@ -316,11 +321,18 @@ class TrainingLoop(ABC, TrainerSetup):
             self.load_model_state_dict(os.path.join(self.base_dir, self.load_dir))
         self.model.to(self.device)
 
-        self.optimizer = self.fetch_optimizers()
+        self.optimizer = self.setup_optimizer()
+        self.lr_scheduler = self.setup_scheduler() # TODO: save, load scheduler
+
         self.start_epoch = 0
         self.start_batch_idx = 0
         if self.load_dir:
             self.load_training_state_dict(self.load_dir)
+
+        # args.local_rank
+        self.enable_deepspeed = args.deepspeed and enable_deepspeed
+        if self.enable_deepspeed:
+            self.model, self.optimizer, self.lr_scheduler = self.init_deepspeed(args, self.model, self.optimizer, self.lr_scheduler)
 
         self.max_epochs = args.max_epochs
         self.accumulation_steps = args.accumulation_steps
@@ -335,33 +347,46 @@ class TrainingLoop(ABC, TrainerSetup):
             "wandb_dir": self.base_dir
         }
 
-    def train_step(self, batch, batch_idx):
-        return self.training_step(batch, batch_idx)
+    def init_deepspeed(args, model, optimizer, lr_scheduler):
 
-    def val_step(self, batch):
-        return self.validation_step(batch)
+        assert isinstance(model, nn.Module), "model must be instance of `nn.Module`"
+
+        # filter parameters which are trainable
+        model_named_parameters = model.named_parameters()
+        for k in model_named_parameters:
+            if not model_named_parameters[k].requires_grad:
+                del model_named_parameters[k]
+
+        model, optimizer, _, lr_scheduler = deepspeed.initialize(
+            args=args, model=model, model_parameters=model_named_parameters, optimizer=optimizer,
+            lr_scheduler=lr_scheduler
+        )
+
+        return model, optimizer, lr_scheduler
+
+    def training_step(self, batch, batch_idx):
+        return self.train_batch(batch, batch_idx)
+
+    def validation_step(self, batch):
+        return self.validate_batch(batch)
 
     def setup_hardware(self, args):
 
+        enable_deepspeed = False
         device = torch.device('cpu')
 
         # If gpu is available, its automatically getting used
-        self.gpus = torch.cuda.device_count()
-        if self.gpus > 0:
+        if torch.cuda.is_available():
             device = torch.device('cuda')
             torch.backends.cudnn.benchmark = True
 
-        self.tpus = args.tpus
-        if args.tpus == 1:
-            try:
-                device = xm.xla_device()
-                self.gpus = 0
-            except:
-                raise ValueError("Can't set device to TPUs")
+        if torch.cuda.device_count() > 1:
+            device = args.local_rank
+            enable_deepspeed = True
 
         print(f"Using {device}")
         args.device = device
-        return device
+        return device, enable_deepspeed
 
     def fit(self,
             tr_dataset: torch.utils.data.DataLoader,
@@ -380,6 +405,7 @@ class TrainingLoop(ABC, TrainerSetup):
 
     @torch.no_grad()
     def empty_grad_(self):
+        # emptying gradients in more efficient way
         for param in self.model.parameters():
             param.grad = None
 
@@ -416,33 +442,28 @@ class TrainingLoop(ABC, TrainerSetup):
 
                 self.model.train(True)
                 # simply doing forward-propogation
-                loss = self.train_step(batch, batch_idx)
+                loss = self.training_step(batch, batch_idx)
                 loss /= self.accumulation_steps
 
                 # accumulating tr_loss for logging (helpful when accumulation-steps > 1)
                 tr_loss += loss.item()
-                loss.backward()
+                self.backward(loss)
 
                 self.after_backward(batch_idx)
 
                 # gradient accumulation handler
                 if (batch_idx+1)%self.accumulation_steps == 0:
 
-                    if self.tpus == 1:
-                        xm.optimizer_step(self.optimizer, barrier=True)
-                    else:
-                        self.optimizer.step()
+                    self.optimizer_step(batch_idx, epoch) # update parameters, learning_rate
 
                     wandb.log({
                         'global_steps': steps,
-                        'step_tr_loss': tr_loss
+                        'step_tr_loss': tr_loss,
+                        'learning_rate': self.lr_scheduler.get_lr(),
                     }, commit=True)
 
                     steps += 1
                     pbar.set_postfix(tr_loss=tr_loss)
-
-                    # emptying gradients in very efficient way
-                    self.empty_grad_()
 
                     # accumulating losses for training-loss at epoch end
                     losses.append(tr_loss)
@@ -476,6 +497,20 @@ class TrainingLoop(ABC, TrainerSetup):
     
         return tr_metric, val_metric
 
+    def optimizer_step(self, batch_idx, epoch):
+        if self.enable_deepspeed:
+            self.model.step()
+        else:
+            self.optimizer.step()
+            self.empty_grad_()
+            self.lr_scheduler.step(batch_idx) # TODO: only updating @ batch level
+
+    def backward(self, loss):
+        if self.enable_deepspeed:
+            self.model.backward(loss)
+        else:
+            loss.backward()
+
     def evaluate(self, val_dataset, show_progress=True):
         # disabling layers like dropout, batch-normalization
         self.model.train(False)
@@ -484,7 +519,7 @@ class TrainingLoop(ABC, TrainerSetup):
         desc = 'Validating ....'
         pbar = tqdm(val_dataset, total=len(val_dataset), desc=desc, initial=0, leave=False) if show_progress else val_dataset
         for batch in pbar:
-            val_loss = self.val_step(batch)
+            val_loss = self.validation_step(batch)
             pbar.set_postfix(val_loss=val_loss.item())
             running_loss.append(val_loss.item())
 
@@ -505,12 +540,10 @@ class TrainingLoop(ABC, TrainerSetup):
     def save_model_state_dict(self, save_dir: str):
 
         path = os.path.join(save_dir, "pytorch_model.bin")
+        state_dict = self.model.state_dict()
 
-        module = self.model.module if hasattr(self.model, "module") else self.model
-        state_dict = module.state_dict()
-
-        if self.tpus > 0:
-            xm.save(state_dict, path)
+        if self.enable_deepspeed:
+            self.model.save_checkpoint(path)
         else:
             torch.save(state_dict, path)
 
@@ -529,11 +562,7 @@ class TrainingLoop(ABC, TrainerSetup):
         )
 
         model = torch.load(path, map_location=self.map_location)
-
-        if hasattr(self.model, "module"):
-            self.model.module.load_state_dict(model)
-        else:
-            self.model.load_state_dict(model)        
+        self.model.load_state_dict(model)        
 
     def load_training_state_dict(self, load_dir: str):
         
@@ -558,33 +587,28 @@ class TrainingLoop(ABC, TrainerSetup):
         print(f'loading successful (start-epoch-{self.start_epoch}, start_batch_idx-{self.start_batch_idx})')
 
 
-class TorchTrainer(TrainingLoop):
+class TorchTrainer(TrainerEngine):
 
     def __init__(self, args):
-
-        print(
-            """
-                |-----------------------------------|
-                |    Device    |     Status         |
-                |-----------------------------------|
-                        GPU     |   {}    
-                |-----------------------------------|
-                        TPU     |   {}       
-                |-----------------------------------|
-            """.format(m1, m2)
-        )
-        TrainingLoop.__init__(self, args)
+        TrainerEngine.__init__(self, args)
 
     @abstractmethod
-    def fetch_optimizers(self):
+    def setup_optimizer(self):
         """
         Return:
             `torch.optim` object
         """
         return
 
+    def setup_scheduler(self):
+        """
+        Return:
+            `torch.optim.lr_scheduler` object
+        """
+        return
+
     @abstractmethod
-    def training_step(self, batch, batch_idx):
+    def train_batch(self, batch, batch_idx):
         """
         This method should look something like this
 
@@ -597,7 +621,7 @@ class TorchTrainer(TrainingLoop):
         return
 
     @abstractmethod
-    def validation_step(self, batch):
+    def validate_batch(self, batch):
         """
         This method should look something like this
 

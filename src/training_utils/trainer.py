@@ -13,10 +13,13 @@ class Trainer(TorchTrainer):
         self.args = args
         super().__init__(args)
 
-    def fetch_optimizers(self):
+    def setup_optimizer(self):
         return torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
 
-    def training_step(self, batch, batch_idx):
+    def setup_scheduler(self):
+        return torch.optim.lr_scheduler(self.optimizer, lr=self.args.lr)
+
+    def train_batch(self, batch, batch_idx):
 
         for k in batch:
           batch[k] = batch[k].to(self.device)
@@ -26,7 +29,7 @@ class Trainer(TorchTrainer):
         return loss
 
     @torch.no_grad()
-    def validation_step(self, batch):
+    def validate_batch(self, batch):
 
         for k in batch:
           batch[k] = batch[k].to(self.device)
