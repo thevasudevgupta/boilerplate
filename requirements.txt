@@ -4,3 +4,6 @@ wandb
 tqdm
 PyYAML
 huggingface_hub
+transformers
+datasets
+git+https://github.com/vasudevgupta7/quick@0.0.1

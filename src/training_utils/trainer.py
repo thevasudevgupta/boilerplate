@@ -1,35 +1,33 @@
 
+import quick
+
 import os
 import torch
 
-from .torch_trainer import TorchTrainer
 
-
-class Trainer(TorchTrainer):
+class Trainer(quick.TorchTrainer):
 
     def __init__(self, model, args):
-
-        self.model = model
-        self.args = args
         super().__init__(args)
+        self.setup(model)
 
-    def fetch_optimizers(self):
-        return torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
+        self.lr = args.lr
 
-    def training_step(self, batch, batch_idx):
+    def setup_optimizer(self):
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
-        for k in batch:
-          batch[k] = batch[k].to(self.device)
+    def train_on_batch(self, batch, batch_idx):
+
+        batch = {batch[k].to(self.device) for k in batch}
 
         out = self.model(**batch, return_dict=True)
         loss = out["loss"].mean()
         return loss
 
     @torch.no_grad()
-    def validation_step(self, batch):
+    def evaluate_on_batch(self, batch):
 
-        for k in batch:
-          batch[k] = batch[k].to(self.device)
+        batch = {batch[k].to(self.device) for k in batch}
 
         out = self.model(**batch, return_dict=True)
         loss = out["loss"].mean()

@@ -12,8 +12,7 @@ if __name__ == '__main__':
         config = yaml.safe_load(f)
     model = Model(config)
 
-    args = TrainerConfig.from_default()
-    args.update(getattr(training_utils, "baseline").__dict__)
+    args = getattr(training_utils, "baseline")
 
     dl = DataLoader(args)
     tr_dataset, val_dataset = dl.setup()
